@@ -1,0 +1,8 @@
+defaults:
+  upstream_branch: main
+  target_branch: main
+  fetch_tags: true
+
+repos:
+  - target_repo: "NSerbin/freedium-web"
+    upstream_url: "https://codeberg.org/Freedium-cfd/web.git"
