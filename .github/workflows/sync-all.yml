@@ -2,12 +2,11 @@ name: Sync forks (weekly)
 
 on:
   schedule:
-    - cron: "15 3 * * 0"  # Domingos 03:15 UTC
-
+    - cron: "15 3 * * 0"  # Sunday 03:15 UTC
   workflow_dispatch:
     inputs:
       only_repo:
-        description: "Opcional: Sync only one repo (ORG/REPO). Empty = ALL."
+        description: "Optional: Sync only one repo (ORG/REPO). Empty = ALL."
         required: false
         default: ""
 
@@ -19,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.out.outputs.matrix }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +58,6 @@ jobs:
 
           matrix = json.dumps({"include": norm})
 
-          # 👉 ESTE es el fix
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
             fh.write(f"matrix={matrix}\n")
 
@@ -68,32 +67,23 @@ jobs:
         env:
           ONLY_REPO: ${{ github.event.inputs.only_repo }}
 
-
   sync:
     needs: matrix
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
-    steps:
-      - name: Mint GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.SYNC_APP_ID }}
-          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+    # 👇 KEY: reusable workflow as JOB
+    uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
 
-      - name: Sync repos
-        uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
-        with:
-          target_repo: ${{ matrix.target_repo }}
-          upstream_url: ${{ matrix.upstream_url }}
-          upstream_branch: ${{ matrix.upstream_branch }}
-          target_branch: ${{ matrix.target_branch }}
-          fetch_tags: ${{ matrix.fetch_tags }}
-        secrets:
-          repo_token: ${{ steps.app-token.outputs.token }}
+    with:
+      target_repo: ${{ matrix.target_repo }}
+      upstream_url: ${{ matrix.upstream_url }}
+      upstream_branch: ${{ matrix.upstream_branch }}
+      target_branch: ${{ matrix.target_branch }}
+      fetch_tags: ${{ matrix.fetch_tags }}
 
+    secrets:
+      SYNC_APP_ID: ${{ secrets.SYNC_APP_ID }}
+      SYNC_APP_PRIVATE_KEY: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
