@@ -26,7 +26,7 @@ jobs:
         name: Build matrix from repos.yml
         run: |
           python - <<'PY'
-          import yaml, json, os
+          import yaml, json, os, sys
 
           with open("repos.yml", "r") as f:
             cfg = yaml.safe_load(f) or {}
@@ -34,7 +34,8 @@ jobs:
           defaults = cfg.get("defaults", {}) or {}
           repos = cfg.get("repos", []) or []
           if not repos:
-            raise SystemExit("repos.yml has no repos")
+            print("repos.yml has no repos", file=sys.stderr)
+            sys.exit(1)
 
           only = os.getenv("ONLY_REPO", "").strip()
 
@@ -52,13 +53,21 @@ jobs:
             norm.append(rr)
 
           if only and not norm:
-            raise SystemExit(f"ONLY_REPO '{only}' not found in repos.yml")
+            print(f"ONLY_REPO '{only}' not found in repos.yml", file=sys.stderr)
+            sys.exit(1)
 
-          print("matrix=" + json.dumps({"include": norm}))
+          matrix = json.dumps({"include": norm})
+
+          # 👉 ESTE es el fix
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+            fh.write(f"matrix={matrix}\n")
+
+          print(matrix)
           PY
         shell: bash
         env:
           ONLY_REPO: ${{ github.event.inputs.only_repo }}
+
 
   sync:
     needs: matrix
