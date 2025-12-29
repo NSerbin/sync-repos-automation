@@ -1,0 +1,72 @@
+name: Sync forks (weekly)
+
+on:
+  schedule:
+    - cron: "15 3 * * 0"  # Domingos 03:15 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.out.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: out
+        name: Build matrix from repos.yml
+        run: |
+          python - <<'PY'
+          import yaml, json
+
+          with open("repos.yml", "r") as f:
+            cfg = yaml.safe_load(f) or {}
+
+          defaults = cfg.get("defaults", {}) or {}
+          repos = cfg.get("repos", []) or []
+          if not repos:
+            raise SystemExit("repos.yml has no repos")
+
+          norm = []
+          for r in repos:
+            rr = dict(defaults)
+            rr.update(r)
+            rr.setdefault("upstream_branch", "main")
+            rr.setdefault("target_branch", "main")
+            rr.setdefault("fetch_tags", True)
+            norm.append(rr)
+
+          print("matrix=" + json.dumps({"include": norm}))
+          PY
+        shell: bash
+
+  sync:
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Sync one repo (overwrite)
+        uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
+        with:
+          target_repo: ${{ matrix.target_repo }}
+          upstream_url: ${{ matrix.upstream_url }}
+          upstream_branch: ${{ matrix.upstream_branch }}
+          target_branch: ${{ matrix.target_branch }}
+          fetch_tags: ${{ matrix.fetch_tags }}
+        secrets:
+          repo_token: ${{ steps.app-token.outputs.token }}
