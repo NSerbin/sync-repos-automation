@@ -3,7 +3,13 @@ name: Sync forks (weekly)
 on:
   schedule:
     - cron: "15 3 * * 0"  # Domingos 03:15 UTC
-  workflow_dispatch: {}
+
+  workflow_dispatch:
+    inputs:
+      only_repo:
+        description: "Opcional: Sync only one repo (ORG/REPO). Empty = ALL."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -20,7 +26,7 @@ jobs:
         name: Build matrix from repos.yml
         run: |
           python - <<'PY'
-          import yaml, json
+          import yaml, json, os
 
           with open("repos.yml", "r") as f:
             cfg = yaml.safe_load(f) or {}
@@ -30,6 +36,8 @@ jobs:
           if not repos:
             raise SystemExit("repos.yml has no repos")
 
+          only = os.getenv("ONLY_REPO", "").strip()
+
           norm = []
           for r in repos:
             rr = dict(defaults)
@@ -37,11 +45,20 @@ jobs:
             rr.setdefault("upstream_branch", "main")
             rr.setdefault("target_branch", "main")
             rr.setdefault("fetch_tags", True)
+
+            if only and rr["target_repo"] != only:
+              continue
+
             norm.append(rr)
+
+          if only and not norm:
+            raise SystemExit(f"ONLY_REPO '{only}' not found in repos.yml")
 
           print("matrix=" + json.dumps({"include": norm}))
           PY
         shell: bash
+        env:
+          ONLY_REPO: ${{ github.event.inputs.only_repo }}
 
   sync:
     needs: matrix
@@ -60,7 +77,7 @@ jobs:
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Sync one repo (overwrite)
+      - name: Sync repos
         uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
         with:
           target_repo: ${{ matrix.target_repo }}
@@ -70,3 +87,4 @@ jobs:
           fetch_tags: ${{ matrix.fetch_tags }}
         secrets:
           repo_token: ${{ steps.app-token.outputs.token }}
+
