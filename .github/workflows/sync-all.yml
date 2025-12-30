@@ -47,6 +47,12 @@ jobs:
             rr.setdefault("target_branch", "main")
             rr.setdefault("fetch_tags", True)
 
+            # ✅ default docker.enabled=false si no existe
+            rr.setdefault("docker", {})
+            if rr["docker"] is None:
+              rr["docker"] = {}
+            rr["docker"].setdefault("enabled", False)
+
             if only and rr["target_repo"] != only:
               continue
 
@@ -74,7 +80,6 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
-    # 👇 KEY: reusable workflow as JOB
     uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
 
     with:
@@ -98,11 +103,21 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
-    # ✅ ahora sí existe `matrix`
-    if: ${{ matrix.docker.enabled }}
-
     steps:
+      # ✅ Gate step: si docker.enabled != true, salimos limpio
+      - name: Skip if docker disabled
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.docker.enabled }}" != "true" ]; then
+            echo "Docker build disabled for '${{ matrix.name }}' -> skipping dispatch."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Mint GitHub App token
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
@@ -111,6 +126,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Dispatch build to builder-projects
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BUILDER_REPO: "NSerbin/builder-projects"
@@ -120,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Dispatching build for ${REPO_NAME}"
+          echo "Dispatching build for ${REPO_NAME} (${SOURCE_REPO}@${REF})"
 
           gh api \
             -X POST \
