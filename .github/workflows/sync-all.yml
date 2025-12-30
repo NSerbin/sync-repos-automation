@@ -125,11 +125,11 @@ jobs:
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Dispatch build to builder-projects
+      - name: Dispatch build to docker-builder-projects
         if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BUILDER_REPO: "NSerbin/builder-projects"
+          BUILDER_REPO: "NSerbin/docker-builder-projects"
           REPO_NAME: ${{ matrix.name }}
           SOURCE_REPO: ${{ matrix.target_repo }}
           REF: ${{ matrix.target_branch }}
