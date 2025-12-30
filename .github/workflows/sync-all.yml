@@ -87,3 +87,48 @@ jobs:
     secrets:
       SYNC_APP_ID: ${{ secrets.SYNC_APP_ID }}
       SYNC_APP_PRIVATE_KEY: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+
+  dispatch_builder:
+    name: Dispatch docker builds (only docker.enabled=true)
+    needs: [matrix, sync]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+
+    # Solo dispara si el repo tiene docker.enabled=true
+    if: ${{ matrix.docker.enabled == true }}
+
+    steps:
+      - name: Mint GitHub App token (for cross-repo dispatch)
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Dispatch build to builder-projects
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BUILDER_REPO: "NSerbin/builder-projects"
+          REPO_NAME: ${{ matrix.name }}
+          SOURCE_REPO: ${{ matrix.target_repo }}
+          # si tu sync siempre actualiza main, dejalo fijo:
+          REF: ${{ matrix.target_branch }}
+        run: |
+          set -euo pipefail
+
+          echo "Dispatching build:"
+          echo "  repo_name=${REPO_NAME}"
+          echo "  source_repo=${SOURCE_REPO}"
+          echo "  ref=${REF}"
+
+          gh api \
+            -X POST \
+            "repos/${BUILDER_REPO}/dispatches" \
+            -f event_type="builder.build" \
+            -f client_payload[repo_name]="${REPO_NAME}" \
+            -f client_payload[source_repo]="${SOURCE_REPO}" \
+            -f client_payload[ref]="${REF}"
