@@ -7,6 +7,16 @@ repos:
   - name: freedium-web
     target_repo: "NSerbin/freedium-web"
     upstream_url: "https://codeberg.org/Freedium-cfd/web.git"
-
     docker:
       enabled: true
+      projects:
+        - freedium-web
+        - freedium-caddy
+
+
+#Y para un fork que NO dockerizás:
+#  - name: some-lib
+#    target_repo: "NSerbin/some-lib"
+#    upstream_url: "https://github.com/some/lib.git"
+#    docker:
+#      enabled: false
