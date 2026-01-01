@@ -105,8 +105,6 @@ jobs:
     name: Dispatch docker builds (docker.enabled=true)
     needs: [matrix, sync]
     runs-on: ubuntu-latest
-
-    # ✅ NO usamos matrix acá. Solo un output seguro del job matrix.
     if: ${{ needs.matrix.outputs.build_count != '0' }}
 
     strategy:
@@ -123,10 +121,20 @@ jobs:
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Dispatch builds to builder-projects
+      - name: Verify builder repo is reachable
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BUILDER_REPO: "NSerbin/builder-projects"
+          BUILDER_REPO: "NSerbin/docker-builder-projects"
+        run: |
+          set -euo pipefail
+          echo "Checking access to ${BUILDER_REPO}..."
+          gh api "repos/${BUILDER_REPO}" >/dev/null
+          echo "OK: token can access ${BUILDER_REPO}"
+
+      - name: Dispatch builds to docker-builder-projects
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BUILDER_REPO: "NSerbin/docker-builder-projects"
           REPO_NAME: ${{ matrix.name }}
           SOURCE_REPO: ${{ matrix.target_repo }}
           REF: ${{ matrix.target_branch }}
@@ -134,8 +142,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # docker.projects opcional:
-          # - si no existe o está vacío => dispara repo_name
           projects="$(echo "$DOCKER_PROJECTS_JSON" | jq -r '
             if . == null or (. | length) == 0 then empty else .[] end
           ')"
