@@ -48,11 +48,9 @@ jobs:
             rr.setdefault("target_branch", "main")
             rr.setdefault("fetch_tags", True)
 
-            # ensure docker block exists
             rr.setdefault("docker", {})
             rr["docker"].setdefault("enabled", False)
 
-            # filter if only_repo set
             if only and rr.get("target_repo") != only:
               continue
 
@@ -97,8 +95,10 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
-    # ✅ esto corre para TODOS cuando only_repo="" porque matrix trae todos
-    if: ${{ matrix.docker.enabled == true }}
+    # ✅ IMPORTANT:
+    # - This must be inside THIS job (dispatch_builder), not anywhere else.
+    # - Use fromJson(toJson(matrix)) to avoid compile-time "matrix" name resolution issues.
+    if: ${{ fromJson(toJson(matrix)).docker.enabled == true }}
 
     steps:
       - name: Mint GitHub App token
@@ -120,9 +120,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Default behavior:
-          # - if docker.projects is defined => dispatch each project
-          # - else dispatch repo_name itself as project key (REPO_NAME)
+          # If docker.projects exists (array) => dispatch each.
+          # Else => default dispatch project = repo_name
           PROJECTS="$(echo "$DOCKER_JSON" | jq -r '
             if (.projects? and (.projects|type=="array") and (.projects|length>0))
             then .projects[] else empty end
@@ -132,13 +131,13 @@ jobs:
             PROJECTS="${REPO_NAME}"
           fi
 
-          echo "Dispatching builds for ${REPO_NAME} => projects:"
+          echo "Dispatching builds for ${REPO_NAME} from ${SOURCE_REPO}@${REF}"
           echo "${PROJECTS}" | sed 's/^/ - /'
 
-          echo "${PROJECTS}" | while read -r PROJECT; do
+          while read -r PROJECT; do
             [ -z "$PROJECT" ] && continue
 
-            echo "Dispatching project=${PROJECT} source=${SOURCE_REPO}@${REF}"
+            echo "Dispatching project=${PROJECT}"
 
             gh api \
               -X POST \
@@ -147,4 +146,4 @@ jobs:
               -f client_payload[repo_name]="${PROJECT}" \
               -f client_payload[source_repo]="${SOURCE_REPO}" \
               -f client_payload[ref]="${REF}"
-          done
+          done <<< "${PROJECTS}"
