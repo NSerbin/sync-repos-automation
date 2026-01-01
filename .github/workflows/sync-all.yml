@@ -17,12 +17,14 @@ jobs:
   matrix:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.out.outputs.matrix }}
+      sync_matrix: ${{ steps.out.outputs.sync_matrix }}
+      build_matrix: ${{ steps.out.outputs.build_matrix }}
+      build_count: ${{ steps.out.outputs.build_count }}
     steps:
       - uses: actions/checkout@v4
 
       - id: out
-        name: Build matrix from repos.yml
+        name: Build matrices from repos.yml
         env:
           ONLY_REPO: ${{ github.event.inputs.only_repo }}
         run: |
@@ -40,31 +42,45 @@ jobs:
             print("repos.yml has no repos", file=sys.stderr)
             sys.exit(1)
 
-          norm = []
+          all_norm = []
+          build_norm = []
+
           for r in repos:
             rr = dict(defaults)
             rr.update(r)
+
             rr.setdefault("upstream_branch", "main")
             rr.setdefault("target_branch", "main")
             rr.setdefault("fetch_tags", True)
 
             rr.setdefault("docker", {})
             rr["docker"].setdefault("enabled", False)
+            rr["docker"].setdefault("projects", [])
 
             if only and rr.get("target_repo") != only:
               continue
 
-            norm.append(rr)
+            all_norm.append(rr)
 
-          if only and not norm:
+            if rr.get("docker", {}).get("enabled") is True:
+              build_norm.append(rr)
+
+          if only and not all_norm:
             print(f"ONLY_REPO '{only}' not found in repos.yml", file=sys.stderr)
             sys.exit(1)
 
-          matrix = json.dumps({"include": norm})
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-            fh.write(f"matrix={matrix}\n")
+          sync_matrix = json.dumps({"include": all_norm})
+          build_matrix = json.dumps({"include": build_norm})
+          build_count = str(len(build_norm))
 
-          print(matrix)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+            fh.write(f"sync_matrix={sync_matrix}\n")
+            fh.write(f"build_matrix={build_matrix}\n")
+            fh.write(f"build_count={build_count}\n")
+
+          print("sync_matrix:", sync_matrix)
+          print("build_matrix:", build_matrix)
+          print("build_count:", build_count)
           PY
 
   sync:
@@ -72,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.matrix.outputs.sync_matrix) }}
 
     uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
     with:
@@ -86,19 +102,17 @@ jobs:
       SYNC_APP_PRIVATE_KEY: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
 
   dispatch_builder:
-    name: Dispatch docker builds (only docker.enabled=true)
+    name: Dispatch docker builds (docker.enabled=true)
     needs: [matrix, sync]
     runs-on: ubuntu-latest
+
+    # ✅ NO usamos matrix acá. Solo un output seguro del job matrix.
+    if: ${{ needs.matrix.outputs.build_count != '0' }}
 
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
-
-    # ✅ IMPORTANT:
-    # - This must be inside THIS job (dispatch_builder), not anywhere else.
-    # - Use fromJson(toJson(matrix)) to avoid compile-time "matrix" name resolution issues.
-    if: ${{ fromJson(toJson(matrix)).docker.enabled == true }}
+      matrix: ${{ fromJson(needs.matrix.outputs.build_matrix) }}
 
     steps:
       - name: Mint GitHub App token
@@ -116,34 +130,32 @@ jobs:
           REPO_NAME: ${{ matrix.name }}
           SOURCE_REPO: ${{ matrix.target_repo }}
           REF: ${{ matrix.target_branch }}
-          DOCKER_JSON: ${{ toJson(matrix.docker) }}
+          DOCKER_PROJECTS_JSON: ${{ toJson(matrix.docker.projects) }}
         run: |
           set -euo pipefail
 
-          # If docker.projects exists (array) => dispatch each.
-          # Else => default dispatch project = repo_name
-          PROJECTS="$(echo "$DOCKER_JSON" | jq -r '
-            if (.projects? and (.projects|type=="array") and (.projects|length>0))
-            then .projects[] else empty end
+          # docker.projects opcional:
+          # - si no existe o está vacío => dispara repo_name
+          projects="$(echo "$DOCKER_PROJECTS_JSON" | jq -r '
+            if . == null or (. | length) == 0 then empty else .[] end
           ')"
 
-          if [ -z "${PROJECTS}" ]; then
-            PROJECTS="${REPO_NAME}"
+          if [ -z "$projects" ]; then
+            projects="$REPO_NAME"
           fi
 
-          echo "Dispatching builds for ${REPO_NAME} from ${SOURCE_REPO}@${REF}"
-          echo "${PROJECTS}" | sed 's/^/ - /'
+          echo "Dispatching build(s) for ${REPO_NAME} from ${SOURCE_REPO}@${REF}"
+          echo "$projects" | sed 's/^/ - /'
 
-          while read -r PROJECT; do
-            [ -z "$PROJECT" ] && continue
-
-            echo "Dispatching project=${PROJECT}"
+          while read -r project; do
+            [ -z "$project" ] && continue
+            echo "Dispatch project=${project}"
 
             gh api \
               -X POST \
               "repos/${BUILDER_REPO}/dispatches" \
               -f event_type="builder.build" \
-              -f client_payload[repo_name]="${PROJECT}" \
+              -f client_payload[repo_name]="${project}" \
               -f client_payload[source_repo]="${SOURCE_REPO}" \
               -f client_payload[ref]="${REF}"
-          done <<< "${PROJECTS}"
+          done <<< "$projects"
