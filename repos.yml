@@ -4,7 +4,7 @@ defaults:
   fetch_tags: true
 
 repos:
-  - name: freedium-web
+  - name: freedium
     target_repo: "NSerbin/freedium-web"
     upstream_url: "https://codeberg.org/Freedium-cfd/web.git"
     docker:
