@@ -2,11 +2,11 @@ name: Sync forks (weekly)
 
 on:
   schedule:
-    - cron: "15 3 * * 0"  # Sunday 03:15 UTC
+    - cron: "15 3 * * 0" # Sunday 03:15 UTC
   workflow_dispatch:
     inputs:
       only_repo:
-        description: "Optional: Sync only one repo (ORG/REPO). Empty = ALL."
+        description: "Optional: sync only one repo (ORG/REPO). Empty = ALL."
         required: false
         default: ""
 
@@ -18,15 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.out.outputs.matrix }}
-
     steps:
       - uses: actions/checkout@v4
 
       - id: out
         name: Build matrix from repos.yml
+        env:
+          ONLY_REPO: ${{ github.event.inputs.only_repo }}
         run: |
           python - <<'PY'
-          import yaml, json, os, sys
+          import os, sys, json, yaml
+
+          only = (os.getenv("ONLY_REPO") or "").strip()
 
           with open("repos.yml", "r") as f:
             cfg = yaml.safe_load(f) or {}
@@ -37,8 +40,6 @@ jobs:
             print("repos.yml has no repos", file=sys.stderr)
             sys.exit(1)
 
-          only = os.getenv("ONLY_REPO", "").strip()
-
           norm = []
           for r in repos:
             rr = dict(defaults)
@@ -47,13 +48,12 @@ jobs:
             rr.setdefault("target_branch", "main")
             rr.setdefault("fetch_tags", True)
 
-            # ✅ default docker.enabled=false si no existe
+            # ensure docker block exists
             rr.setdefault("docker", {})
-            if rr["docker"] is None:
-              rr["docker"] = {}
             rr["docker"].setdefault("enabled", False)
 
-            if only and rr["target_repo"] != only:
+            # filter if only_repo set
+            if only and rr.get("target_repo") != only:
               continue
 
             norm.append(rr)
@@ -63,15 +63,11 @@ jobs:
             sys.exit(1)
 
           matrix = json.dumps({"include": norm})
-
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
             fh.write(f"matrix={matrix}\n")
 
           print(matrix)
           PY
-        shell: bash
-        env:
-          ONLY_REPO: ${{ github.event.inputs.only_repo }}
 
   sync:
     needs: matrix
@@ -81,20 +77,18 @@ jobs:
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
     uses: NSerbin/gh-pipelines/.github/workflows/upstream-sync.yml@main
-
     with:
       target_repo: ${{ matrix.target_repo }}
       upstream_url: ${{ matrix.upstream_url }}
       upstream_branch: ${{ matrix.upstream_branch }}
       target_branch: ${{ matrix.target_branch }}
       fetch_tags: ${{ matrix.fetch_tags }}
-
     secrets:
       SYNC_APP_ID: ${{ secrets.SYNC_APP_ID }}
       SYNC_APP_PRIVATE_KEY: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
 
   dispatch_builder:
-    name: Dispatch docker builds
+    name: Dispatch docker builds (only docker.enabled=true)
     needs: [matrix, sync]
     runs-on: ubuntu-latest
 
@@ -103,21 +97,11 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
 
-    steps:
-      # ✅ Gate step: si docker.enabled != true, salimos limpio
-      - name: Skip if docker disabled
-        id: gate
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.docker.enabled }}" != "true" ]; then
-            echo "Docker build disabled for '${{ matrix.name }}' -> skipping dispatch."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+    # ✅ esto corre para TODOS cuando only_repo="" porque matrix trae todos
+    if: ${{ matrix.docker.enabled == true }}
 
+    steps:
       - name: Mint GitHub App token
-        if: ${{ steps.gate.outputs.skip != 'true' }}
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
@@ -125,23 +109,42 @@ jobs:
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Dispatch build to docker-builder-projects
-        if: ${{ steps.gate.outputs.skip != 'true' }}
+      - name: Dispatch builds to builder-projects
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BUILDER_REPO: "NSerbin/docker-builder-projects"
+          BUILDER_REPO: "NSerbin/builder-projects"
           REPO_NAME: ${{ matrix.name }}
           SOURCE_REPO: ${{ matrix.target_repo }}
           REF: ${{ matrix.target_branch }}
+          DOCKER_JSON: ${{ toJson(matrix.docker) }}
         run: |
           set -euo pipefail
 
-          echo "Dispatching build for ${REPO_NAME} (${SOURCE_REPO}@${REF})"
+          # Default behavior:
+          # - if docker.projects is defined => dispatch each project
+          # - else dispatch repo_name itself as project key (REPO_NAME)
+          PROJECTS="$(echo "$DOCKER_JSON" | jq -r '
+            if (.projects? and (.projects|type=="array") and (.projects|length>0))
+            then .projects[] else empty end
+          ')"
 
-          gh api \
-            -X POST \
-            "repos/${BUILDER_REPO}/dispatches" \
-            -f event_type="builder.build" \
-            -f client_payload[repo_name]="${REPO_NAME}" \
-            -f client_payload[source_repo]="${SOURCE_REPO}" \
-            -f client_payload[ref]="${REF}"
+          if [ -z "${PROJECTS}" ]; then
+            PROJECTS="${REPO_NAME}"
+          fi
+
+          echo "Dispatching builds for ${REPO_NAME} => projects:"
+          echo "${PROJECTS}" | sed 's/^/ - /'
+
+          echo "${PROJECTS}" | while read -r PROJECT; do
+            [ -z "$PROJECT" ] && continue
+
+            echo "Dispatching project=${PROJECT} source=${SOURCE_REPO}@${REF}"
+
+            gh api \
+              -X POST \
+              "repos/${BUILDER_REPO}/dispatches" \
+              -f event_type="builder.build" \
+              -f client_payload[repo_name]="${PROJECT}" \
+              -f client_payload[source_repo]="${SOURCE_REPO}" \
+              -f client_payload[ref]="${REF}"
+          done
